@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; }
+        
+        body { 
+            display: flex; 
+            height: 100vh; 
+            background-color: #f3f4f6; 
+            color: #1f2937; 
+            overflow: hidden; 
+        }
+
+        .sidebar { 
+            width: 250px; 
+            background-color: #27272a; 
+            color: #ffffff; 
+            display: flex; 
+            flex-direction: column; 
+            box-shadow: 2px 0 20px rgba(0,0,0,0.06); 
+            z-index: 20;
+            position: sticky; 
+            top: 0;
+            height: 100vh;
+        }
+        
+        .sidebar-header {
+            padding: 30px 20px 20px;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #9ca3af;
+            font-weight: 700;
+        }
+
+        .sidebar-tab { 
+            padding: 16px 20px; 
+            background-color: transparent; 
+            cursor: pointer; 
+            font-size: 16px; 
+            font-weight: 600; 
+            border-left: 4px solid #fbbf24; 
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); 
+            color: #f3f4f6;
+        }
+        .sidebar-tab:hover { 
+            background-color: #3f3f46; 
+            border-left-width: 8px;
+            padding-left: 24px;
+        }
+
+        .main-content { 
+            flex: 1; 
+            display: flex; 
+            justify-content: center; 
+            align-items: flex-start; 
+            padding: 40px 20px; 
+            overflow-y: auto; 
+            scroll-behavior: smooth;
+        }
+        .center-container { 
+            width: 100%; 
+            max-width: 680px; 
+            background-color: #ffffff; 
+            padding: 0 40px 40px 40px; 
+            border-radius: 20px; 
+            box-shadow: 0 20px 40px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.05); 
+            display: flex; 
+            flex-direction: column; 
+            gap: 28px; 
+            position: relative;
+        }
+
+        .sticky-header {
+            position: sticky;
+            top: 0;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(8px); 
+            padding: 30px 0 15px 0;
+            margin-bottom: 5px;
+            z-index: 10;
+            border-bottom: 1px solid #f3f4f6;
+        }
+        
+        h1 { 
+            text-align: center; 
+            color: #111827; 
+            font-size: 26px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+        }
+
+        .box-group { display: flex; flex-direction: column; gap: 12px; }
+        .label-row { display: flex; justify-content: space-between; align-items: center; }
+        label { font-weight: 700; color: #4b5563; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px; }
+        
+        .action-btn { 
+            padding: 10px 20px; 
+            font-size: 14px; 
+            font-weight: 600; 
+            color: #ffffff; 
+            border: none; 
+            border-radius: 10px; 
+            cursor: pointer; 
+            transition: all 0.2s ease; 
+        }
+        
+        #refineBtn {
+            background-color: #8b5cf6; 
+            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.25);
+        }
+        #refineBtn:hover { 
+            background-color: #7c3aed; 
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(139, 92, 246, 0.35);
+        }
+        #refineBtn:active { transform: translateY(0); }
+        #refineBtn:disabled { background-color: #d1d5db; box-shadow: none; cursor: not-allowed; transform: none; }
+
+        #copyBtn {
+            background-color: #10b981; 
+            padding: 6px 14px;
+            font-size: 12px;
+            border-radius: 6px;
+            box-shadow: 0 4px 10px rgba(16, 185, 129, 0.2);
+        }
+        #copyBtn:hover {
+            background-color: #059669;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(16, 185, 129, 0.3);
+        }
+
+        .input-row { display: flex; gap: 12px; }
+        input[type="text"] { 
+            flex: 1; 
+            padding: 14px 18px; 
+            border: 2px solid #e5e7eb; 
+            background-color: #f9fafb;
+            border-radius: 10px; 
+            font-size: 15px; 
+            color: #111827;
+            transition: all 0.3s ease; 
+        }
+        
+        input[type="text"]:focus { 
+            border-color: #8b5cf6; 
+            background-color: #ffffff;
+            box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.1);
+            outline: none; 
+        }
+        input[type="text"]::placeholder { color: #9ca3af; font-weight: 400; }
+
+        .output-box { 
+            width: 100%; 
+            min-height: 200px; 
+            background-color: #f9fafb; 
+            border: 2px solid #e5e7eb; 
+            padding: 18px; 
+            border-radius: 12px; 
+            color: #374151; 
+            font-size: 15px; 
+            line-height: 1.6;
+            white-space: pre-wrap; 
+            transition: all 0.3s ease;
+            display: flex;
+            flex-direction: column; 
+            justify-content: flex-start; 
+            align-items: flex-start; 
+            text-align: left;        
+        }
+        
+        .output-box:hover { border-color: #d1d5db; }
+
+        @media (max-width: 768px) {
+            body { flex-direction: column; overflow: auto; }
+            .sidebar { 
+                width: 100%; 
+                height: auto;
+                flex-direction: row; 
+                align-items: center;
+                position: sticky;
+                top: 0;
+                z-index: 30;
+            }
+            .sidebar-header { display: none; } 
+            .sidebar-tab { 
+                flex: 1; 
+                text-align: center; 
+                border-left: none; 
+                border-bottom: 4px solid #fbbf24; 
+                padding: 16px 10px;
+            }
+            .sidebar-tab:hover { border-left-width: 0; border-bottom-width: 6px; padding-left: 10px; }
+            
+            .main-content { padding: 20px 15px; overflow-y: visible; }
+            .center-container { padding: 0 20px 30px 20px; gap: 24px; border-radius: 16px; }
+            .sticky-header { padding: 20px 0 10px 0; }
+            .input-row { flex-direction: column; }
+            .action-btn { padding: 14px; font-size: 15px; width: 100%; justify-content: center;}
+        }
+    </style>
+</head>
+<body>
+
+    <div class="sidebar">
+        <div class="sidebar-header">Menu</div>
+        {% if user_name %}
+            <div class="sidebar-tab" style="border-left-color: #10b981;">
+                👤 {{ user_name }}
+            </div>
+            <div class="sidebar-tab" style="border-left-color: #8b5cf6; font-size: 14px;">
+                ⚡ Credits: <span id="creditCounter">{{ credits_left }}</span>
+            </div>
+            <div class="sidebar-tab" style="border-left: none; color: #ef4444;" onclick="window.location.href='/logout'">
+                🚪 Logout
+            </div>
+        {% else %}
+            <div class="sidebar-tab" onclick="window.location.href='/login'">
+                👤 Login / Sign Up
+            </div>
+            <div class="sidebar-tab" style="border-left-color: #8b5cf6; font-size: 14px;">
+                ⚡ Guest Uses: <span id="creditCounter">{{ credits_left }}</span>/2
+            </div>
+        {% endif %}
+        <div class="sidebar-tab" style="border-left: none; color: #9ca3af;" onclick="alert('Feature coming soon!')">
+            ⚙️ Settings
+        </div>
+        <div style="padding: 0 20px 15px 20px;">
+                <button onclick="payWithRazorpay()" style="width: 100%; padding: 10px; background-color: #fbbf24; color: #854d0e; border: none; border-radius: 8px; font-weight: bold; cursor: pointer;">
+                    Buy 5 Credits (₹10)
+                </button>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="center-container">
+            
+            <div class="sticky-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <h1 style="margin: 0;">Sintara</h1>
+                <div style="background-color: #f3f4f6; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; color: #4b5563; display: flex; align-items: center; gap: 6px;">
+                    ✨ Powered by Multi-Agent AI
+                </div>
+            </div>
+            
+            <div class="box-group">
+                <label for="userInput">Draft Prompt</label>
+                <div class="input-row">
+                    <input type="text" id="userInput" placeholder="E.g., write a compelling story about a clever dog...">
+                    <button class="action-btn" id="refineBtn">Refine Magic</button>
+                </div>
+                <div style="font-size: 11px; color: #9ca3af; text-align: center; margin-top: 4px;">
+                    Our AI models will debate and refine your prompt. This may take a moment.
+                </div>
+            </div>
+
+            <div class="box-group">
+                <div class="label-row">
+                    <label>Refined Masterpiece</label>
+                    <button class="action-btn" id="copyBtn">Copy Text</button>
+                </div>
+                <div class="output-box" id="outputBox">Your refined, high-quality prompt will elegantly appear here...</div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        const copyBtn = document.getElementById('copyBtn');
+        const outputBox = document.getElementById('outputBox');
+        
+        copyBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(outputBox.innerText.trim()).then(() => {
+                const originalText = copyBtn.innerText;
+                copyBtn.innerText = 'Copied! ✓';
+                copyBtn.style.backgroundColor = '#059669'; 
+                setTimeout(() => {
+                    copyBtn.innerText = originalText;
+                    copyBtn.style.backgroundColor = ''; 
+                }, 2000);
+            });
+        });
+
+        const refineBtn = document.getElementById('refineBtn');
+        const userInput = document.getElementById('userInput');
+
+        userInput.addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                refineBtn.click();
+            }
+        });
+
+        refineBtn.addEventListener('click', async () => {
+            const promptText = userInput.value.trim();
+            if (!promptText) return alert('Please enter a prompt first.');
+
+            refineBtn.disabled = true;
+            refineBtn.innerText = 'Running Pipeline...';
+            outputBox.style.opacity = '0.6';
+
+            try {
+                const response = await fetch('/refine', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: promptText })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    outputBox.innerText = data.refined_prompt;
+                    if (data.credits_left !== undefined) {
+                        document.getElementById('creditCounter').innerText = data.credits_left;
+                    }
+                } else if (response.status === 403) {
+                    outputBox.innerText = `🔒 ${data.error}`;
+                    outputBox.style.color = '#ef4444'; 
+                } else {
+                    outputBox.innerText = `Error: ${data.error}`;
+                }
+            } catch (error) {
+                outputBox.innerText = 'A network error occurred. Please try again.';
+            } finally {
+                refineBtn.disabled = false;
+                refineBtn.innerText = 'Refine Magic';
+                outputBox.style.opacity = '1';
+            }
+        });
+
+        async function payWithRazorpay() {
+            const response = await fetch('/create-razorpay-order', { method: 'POST' });
+            const data = await response.json();
+            
+            if (data.error) {
+                alert(data.error);
+                return;
+            }
+
+            const options = {
+                "key": "rzp_test_SkUtVi38fMkUOU", 
+                "amount": data.amount,
+                "currency": "INR",
+                "name": "Sintara",
+                "description": "50 AI Credits",
+                "order_id": data.order_id,
+                "handler": async function (response) {
+                    const verifyResponse = await fetch('/verify-payment', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            razorpay_payment_id: response.razorpay_payment_id,
+                            razorpay_order_id: response.razorpay_order_id,
+                            razorpay_signature: response.razorpay_signature
+                        })
+                    });
+                    
+                    const verifyResult = await verifyResponse.json();
+                    
+                    if (verifyResult.status === 'success') {
+                        document.getElementById('creditCounter').innerText = verifyResult.new_credits;
+                        alert("Payment successful! 50 credits have been added to your account.");
+                    } else {
+                        alert("Payment verification failed.");
+                    }
+                },
+                "theme": {
+                    "color": "#8b5cf6" 
+                }
+            };
+            
+            const rzp = new Razorpay(options);
+            rzp.open();
+        }
+    </script>
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+</body>
+</html>
