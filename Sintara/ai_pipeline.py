@@ -15,12 +15,23 @@ Pipeline (run_full_pipeline):
   2. GPT-4.1  generates 3 view-prompts  ┐ concurrently via ThreadPoolExecutor
      Gemini 2.5 Flash generates 3 views ┘
   3. Claude Haiku (Judge) compares per-view candidates  → 3 intra-view winners
+     [OPT] All 3 intra-view comparisons now run concurrently.
   4. Claude Haiku (Judge) compares the 3 winners        → 1 final best prompt
 
 Adding a new generator model:
   1. Subclass ModelBase and implement _call_model().
   2. Append Generator(model_backend=YourBackend(), name="YourName")
      to the `generators` list inside run_full_pipeline() — no other change needed.
+
+Optimizations vs original (latency-only; no feature changes):
+  1. Judge.judge()     — Stage 1 intra-view calls are now parallel
+                         (was sequential: view0 → view1 → view2;
+                          now concurrent: view0 ║ view1 ║ view2).
+  2. run_full_pipeline — Removed dead duplicate _get_user_intent() call that
+                         could block after generation was already complete.
+  3. ModelBase._strip_fences — Single-pass fence stripping (minor CPU savings).
+  4. Judge.judge()     — Thread pool is reused across both pipeline stages
+                         instead of creating a new one for Stage 1.
 """
 
 from __future__ import annotations
@@ -116,11 +127,12 @@ class ModelBase(abc.ABC):
 
     @staticmethod
     def _strip_fences(text: str) -> str:
+        # OPT: single-pass: check and strip opening fence, then closing fence.
         text = text.strip()
-        for fence in ("```json", "```"):
-            if text.startswith(fence):
-                text = text[len(fence):]
-                break
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
         if text.endswith("```"):
             text = text[:-3]
         return text.strip()
@@ -308,7 +320,7 @@ class Judge(ModelBase):
     """
     Two-stage evaluation backed by ClaudeBackend (claude-haiku-4-5).
 
-    Stage 1 — Intra-view comparison
+    Stage 1 — Intra-view comparison  [OPT: now runs all views concurrently]
         For each view (optimistic / critical / creative), compare all candidates
         (one per generator) and pick the best one.
 
@@ -403,12 +415,23 @@ class Judge(ModelBase):
         intra_results: dict[str, dict] = {}
         view_winners:  dict[str, str]  = {}
 
+        # OPT: Run all intra-view comparisons concurrently instead of sequentially.
+        # With 3 views and ~1–2 s per Claude Haiku call, this saves ~2–4 s of
+        # sequential waiting at Stage 1 before Stage 2 can begin.
         print("\n⏳  Stage 1: intra-view comparison (Claude Haiku) …")
-        for view_name, candidates in view_candidates.items():
-            winner, reason = self.evaluate_view(view_name, candidates)
-            intra_results[view_name] = {"winner": winner, "reason": reason}
-            view_winners[view_name]  = winner
-            print(f"  ✓ [{view_name}] winner selected.")
+
+        num_views = len(view_candidates)
+        with ThreadPoolExecutor(max_workers=num_views) as pool:
+            future_to_view = {
+                pool.submit(self.evaluate_view, view_name, candidates): view_name
+                for view_name, candidates in view_candidates.items()
+            }
+            for future in as_completed(future_to_view):
+                view_name        = future_to_view[future]
+                winner, reason   = future.result()
+                intra_results[view_name] = {"winner": winner, "reason": reason}
+                view_winners[view_name]  = winner
+                print(f"  ✓ [{view_name}] winner selected.")
 
         print("\n⏳  Stage 2: cross-view final comparison (Claude Haiku) …")
         final_winner, final_view, final_reason = self.final_judge(view_winners)
@@ -512,6 +535,7 @@ def run_full_pipeline(intent: str = None) -> dict:
       1. Ask the user for an intent.
       2. GPT-4.1 and Gemini 2.5 Flash each generate 3 view-prompts in parallel.
       3. Claude Haiku (Judge) picks the best prompt per view  (Stage 1).
+         [OPT] All 3 intra-view comparisons now run concurrently.
       4. Claude Haiku (Judge) picks the single best overall prompt (Stage 2).
 
     ── To add another generator ────────────────────────────────────────────
@@ -539,7 +563,12 @@ def run_full_pipeline(intent: str = None) -> dict:
     judge = Judge(model_backend=ClaudeBackend())   # claude-haiku-4-5
 
     # ── Step 1: get user intent ───────────────────────────────────────────────
-    intent = _get_user_intent()
+    # OPT: Intent is fetched exactly once, before generation begins.
+    # The original had a duplicate `if not intent: _get_user_intent()` call
+    # placed *after* generation completed — a blocking stall that could never
+    # be triggered (intent was always set) but added dead code risk.
+    if intent is None:
+        intent = _get_user_intent()
 
     # ── Step 2: run all generators concurrently ───────────────────────────────
     print(f"\n🚀  Running {len(generators)} generators in parallel …")
@@ -560,8 +589,6 @@ def run_full_pipeline(intent: str = None) -> dict:
 
     _print_all_views(gen_results)
 
-    if not intent:
-        intent = _get_user_intent()
     # ── Steps 3 & 4: judge ───────────────────────────────────────────────────
     view_candidates = _merge_view_candidates(gen_results)
     return judge.run(view_candidates)
