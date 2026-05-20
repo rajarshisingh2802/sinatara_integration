@@ -3,35 +3,12 @@ AI Pipeline: Multi-model prompt generation + judging system.
 
 Architecture:
   ModelBase              — abstract base: wraps any model's input/output
-    ├── ClaudeBackend    — Anthropic Claude (judge: claude-haiku-4-5)
-    ├── OpenAIBackend    — OpenAI          (generator: gpt-4.1)
-    └── GeminiBackend    — Google Gemini   (generator: gemini-2.5-flash)
+    ├── ClaudeBackend    — Anthropic Claude (judge: claude-sonnet-4-6)
+    ├── OpenAIBackend    — OpenAI         (generator: gpt-5.1)
+    └── GeminiBackend    — Google Gemini   (generator: gemini-3.5-flash-preview)
 
   Generator              — wraps a ModelBase backend; produces 3 view-prompts
   Judge                  — wraps ClaudeBackend; two-stage evaluation
-
-Pipeline (run_full_pipeline):
-  1. User types intent once.
-  2. GPT-4.1  generates 3 view-prompts  ┐ concurrently via ThreadPoolExecutor
-     Gemini 2.5 Flash generates 3 views ┘
-  3. Claude Haiku (Judge) compares per-view candidates  → 3 intra-view winners
-     [OPT] All 3 intra-view comparisons now run concurrently.
-  4. Claude Haiku (Judge) compares the 3 winners        → 1 final best prompt
-
-Adding a new generator model:
-  1. Subclass ModelBase and implement _call_model().
-  2. Append Generator(model_backend=YourBackend(), name="YourName")
-     to the `generators` list inside run_full_pipeline() — no other change needed.
-
-Optimizations vs original (latency-only; no feature changes):
-  1. Judge.judge()     — Stage 1 intra-view calls are now parallel
-                         (was sequential: view0 → view1 → view2;
-                          now concurrent: view0 ║ view1 ║ view2).
-  2. run_full_pipeline — Removed dead duplicate _get_user_intent() call that
-                         could block after generation was already complete.
-  3. ModelBase._strip_fences — Single-pass fence stripping (minor CPU savings).
-  4. Judge.judge()     — Thread pool is reused across both pipeline stages
-                         instead of creating a new one for Stage 1.
 """
 
 from __future__ import annotations
@@ -39,6 +16,7 @@ from __future__ import annotations
 import abc
 import os
 import json
+import re
 import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -85,15 +63,6 @@ class ViewPrompts:
 # ---------------------------------------------------------------------------
 
 class ModelBase(abc.ABC):
-    """
-    Provider-agnostic wrapper around a language model.
-
-    To add a new provider:
-      1. Subclass this class.
-      2. Implement _call_model(messages, *, system="") -> str.
-      3. Pass an instance to Generator or Judge.
-    """
-
     def send(self, messages: list[Message], *, system: str = "") -> ModelResponse:
         raw = self._call_model(messages, system=system)
         return ModelResponse(raw=raw)
@@ -104,10 +73,6 @@ class ModelBase(abc.ABC):
         *,
         system: str = "",
     ) -> ModelResponse:
-        """
-        Like send(), but appends a JSON-only instruction to the system prompt
-        and auto-parses the response. Strips markdown code fences if present.
-        """
         json_instruction = (
             "Respond with valid JSON only. "
             "Do not include any prose, explanation, or markdown code fences."
@@ -127,30 +92,28 @@ class ModelBase(abc.ABC):
 
     @staticmethod
     def _strip_fences(text: str) -> str:
-        # OPT: single-pass: check and strip opening fence, then closing fence.
         text = text.strip()
-        if text.startswith("```json"):
-            text = text[7:]
-        elif text.startswith("```"):
-            text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
+        # 1. Check for markdown code blocks anywhere in the response
+        match = re.search(r'```(?:json)?\s*(.*?)\s*
+```', text, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        
+        # 2. Fallback: Find the first { and last } in case the model is chatty
+        start = text.find('{')
+        end = text.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            return text[start:end+1]
+            
         return text.strip()
 
 
 # ---------------------------------------------------------------------------
-# Backend: Anthropic Claude  (judge → claude-haiku-4-5)
+# Backend: Anthropic Claude  (judge → claude-sonnet-4-6)
 # ---------------------------------------------------------------------------
 
 class ClaudeBackend(ModelBase):
-    """
-    Anthropic Claude backend.
-    Default model: claude-haiku-4-5  (used as the Judge).
-
-    Required env var: ANTHROPIC_API_KEY
-    """
-
-    DEFAULT_MODEL      = "claude-haiku-4-5"
+    DEFAULT_MODEL      = "claude-sonnet-4-6"
     DEFAULT_MAX_TOKENS = 2048
 
     def __init__(
@@ -162,7 +125,7 @@ class ClaudeBackend(ModelBase):
         self.model      = model
         self.max_tokens = max_tokens
         self._client    = anthropic.Anthropic(
-            api_key=api_key or os.environ["ANTHROPIC_API_KEY"]
+            api_key=api_key or os.getenv("ANTHROPIC_API_KEY")
         )
 
     def _call_model(self, messages: list[Message], *, system: str = "") -> str:
@@ -179,18 +142,11 @@ class ClaudeBackend(ModelBase):
 
 
 # ---------------------------------------------------------------------------
-# Backend: OpenAI GPT  (generator → gpt-4.1)
+# Backend: OpenAI GPT  (generator → gpt-5.1)
 # ---------------------------------------------------------------------------
 
 class OpenAIBackend(ModelBase):
-    """
-    OpenAI backend.
-    Default model: gpt-4.1  (used as a Generator).
-
-    Required env var: OPENAI_API_KEY
-    """
-
-    DEFAULT_MODEL      = "gpt-4.1"
+    DEFAULT_MODEL      = "gpt-5.1"
     DEFAULT_MAX_TOKENS = 2048
 
     def __init__(
@@ -202,7 +158,7 @@ class OpenAIBackend(ModelBase):
         self.model      = model
         self.max_tokens = max_tokens
         self._client    = openai.OpenAI(
-            api_key=api_key or os.environ["OPENAI_API_KEY"]
+            api_key=api_key or os.getenv("OPENAI_API_KEY")
         )
 
     def _call_model(self, messages: list[Message], *, system: str = "") -> str:
@@ -220,18 +176,11 @@ class OpenAIBackend(ModelBase):
 
 
 # ---------------------------------------------------------------------------
-# Backend: Google Gemini  (generator → gemini-2.5-flash)
+# Backend: Google Gemini  (generator → gemini-3.5-flash-preview)
 # ---------------------------------------------------------------------------
 
 class GeminiBackend(ModelBase):
-    """
-    Google Gemini backend.
-    Default model: gemini-2.5-flash-preview-05-20  (used as a Generator).
-
-    Required env var: GOOGLE_API_KEY
-    """
-
-    DEFAULT_MODEL = "gemini-2.5-flash-preview-05-20"
+    DEFAULT_MODEL = "gemini-3.5-flash-preview"
 
     def __init__(
         self,
@@ -239,18 +188,22 @@ class GeminiBackend(ModelBase):
         model: str = DEFAULT_MODEL,
     ) -> None:
         self.model = model
-        genai.configure(api_key=api_key or os.environ["GOOGLE_API_KEY"])
-        self._client = genai.GenerativeModel(self.model)
+        key = api_key or os.getenv("GOOGLE_API_KEY")
+        if key:
+            genai.configure(api_key=key)
 
     def _call_model(self, messages: list[Message], *, system: str = "") -> str:
-        # Gemini uses a flat content list; prepend system as an initial turn.
-        parts: list[str] = []
-        if system:
-            parts.append(system)
-        parts += [m.content for m in messages]
-
-        response = self._client.generate_content("\n\n".join(parts))
-        return response.text
+        client = genai.GenerativeModel(
+            self.model, 
+            system_instruction=system or None
+        )
+        parts = [m.content for m in messages]
+        
+        response = client.generate_content(parts)
+        try:
+            return response.text
+        except ValueError:
+            return "{}"
 
 
 # ---------------------------------------------------------------------------
@@ -258,14 +211,6 @@ class GeminiBackend(ModelBase):
 # ---------------------------------------------------------------------------
 
 class Generator(ModelBase):
-    """
-    Wraps any ModelBase backend and converts a user intent into three
-    prompt variants: optimistic / critical / creative.
-
-    To add a new generation model, just instantiate Generator with a different
-    backend — no changes to this class are needed.
-    """
-
     SYSTEM_PROMPT = textwrap.dedent("""\
         You are an expert prompt engineer.
         Given a user's intent, produce exactly THREE refined prompt variants.
@@ -280,14 +225,6 @@ class Generator(ModelBase):
     """)
 
     def __init__(self, model_backend: ModelBase, name: str = "") -> None:
-        """
-        Parameters
-        ----------
-        model_backend : ModelBase
-            The backend to use for generation.
-        name : str
-            Human-readable label used in logs (e.g. "GPT-4.1").
-        """
         self._backend = model_backend
         self.name     = name or type(model_backend).__name__
 
@@ -295,20 +232,16 @@ class Generator(ModelBase):
         return self._backend._call_model(messages, system=system)
 
     def generate(self, intent: str) -> ViewPrompts:
-        """Send `intent` to the backend; return a ViewPrompts with 3 variants."""
         messages = [Message(role="user", content=intent)]
         resp = self.send_for_json(messages, system=self.SYSTEM_PROMPT)
 
         if not resp.parsed:
-            raise RuntimeError(
-                f"[{self.name}] Could not parse model output as JSON.\n"
-                f"Raw output:\n{resp.raw}"
-            )
+            raise RuntimeError(f"[{self.name}] JSON parse failed.\nRaw:\n{resp.raw}")
 
         return ViewPrompts(
             optimistic=resp.parsed.get("optimistic", ""),
-            critical=resp.parsed.get("critical",   ""),
-            creative=resp.parsed.get("creative",   ""),
+            critical=resp.parsed.get("critical",    ""),
+            creative=resp.parsed.get("creative",    ""),
         )
 
 
@@ -317,17 +250,6 @@ class Generator(ModelBase):
 # ---------------------------------------------------------------------------
 
 class Judge(ModelBase):
-    """
-    Two-stage evaluation backed by ClaudeBackend (claude-haiku-4-5).
-
-    Stage 1 — Intra-view comparison  [OPT: now runs all views concurrently]
-        For each view (optimistic / critical / creative), compare all candidates
-        (one per generator) and pick the best one.
-
-    Stage 2 — Cross-view final comparison
-        Compare the three per-view winners and pick the single best prompt.
-    """
-
     INTRA_SYSTEM = textwrap.dedent("""\
         You are a rigorous prompt quality judge.
         You will receive several prompt candidates for the same VIEW.
@@ -356,17 +278,15 @@ class Judge(ModelBase):
     """)
 
     def __init__(self, model_backend: Optional[ModelBase] = None) -> None:
-        """Defaults to ClaudeBackend() (claude-haiku-4-5) if nothing is supplied."""
         self._backend = model_backend or ClaudeBackend()
 
     def _call_model(self, messages: list[Message], *, system: str = "") -> str:
         return self._backend._call_model(messages, system=system)
 
     def evaluate_view(self, view_name: str, candidates: list[str]) -> tuple[str, str]:
-        """
-        Stage 1: compare candidates within a single view.
-        Returns (winner_text, reason).
-        """
+        if not candidates:
+            return "", "No candidates were successfully generated for this view."
+        
         if len(candidates) == 1:
             return candidates[0], "Only one candidate — selected by default."
 
@@ -380,15 +300,20 @@ class Judge(ModelBase):
         return winner, reason
 
     def final_judge(self, view_winners: dict[str, str]) -> tuple[str, str, str]:
-        """
-        Stage 2: compare per-view winners to select the overall best prompt.
-        Returns (winner_text, winning_view, reason).
-        """
+        valid_winners = {v: t for v, t in view_winners.items() if t}
+        if not valid_winners:
+            return "", "", "Pipeline failed: No prompts were generated."
+
+        if len(valid_winners) == 1:
+            view, text = list(valid_winners.items())[0]
+            return text, view, "Only one view produced a valid prompt."
+
         formatted = "\n\n".join(
-            f"[{view.upper()}]\n{text}" for view, text in view_winners.items()
+            f"[{view.upper()}]\n{text}" for view, text in valid_winners.items()
         )
         user_msg = Message(role="user", content=formatted)
         resp     = self.send_for_json([user_msg], system=self.FINAL_SYSTEM)
+        
         return (
             resp.parsed.get("winner", ""),
             resp.parsed.get("view",   ""),
@@ -396,32 +321,13 @@ class Judge(ModelBase):
         )
 
     def judge(self, view_candidates: dict[str, list[str]]) -> dict:
-        """
-        Full two-stage pipeline.
-
-        Parameters
-        ----------
-        view_candidates : dict[str, list[str]]
-            Keys = view names; values = list of candidate strings (one per generator).
-
-        Returns
-        -------
-        dict with keys:
-          "intra_results" — {view: {"winner": str, "reason": str}}
-          "final_winner"  — the single best prompt text
-          "final_view"    — which view it came from
-          "final_reason"  — why it won
-        """
         intra_results: dict[str, dict] = {}
         view_winners:  dict[str, str]  = {}
 
-        # OPT: Run all intra-view comparisons concurrently instead of sequentially.
-        # With 3 views and ~1–2 s per Claude Haiku call, this saves ~2–4 s of
-        # sequential waiting at Stage 1 before Stage 2 can begin.
-        print("\n⏳  Stage 1: intra-view comparison (Claude Haiku) …")
-
+        print("\n⏳  Stage 1: intra-view comparison (Claude Sonnet) …")
         num_views = len(view_candidates)
-        with ThreadPoolExecutor(max_workers=num_views) as pool:
+        
+        with ThreadPoolExecutor(max_workers=max(1, num_views)) as pool:
             future_to_view = {
                 pool.submit(self.evaluate_view, view_name, candidates): view_name
                 for view_name, candidates in view_candidates.items()
@@ -433,7 +339,7 @@ class Judge(ModelBase):
                 view_winners[view_name]  = winner
                 print(f"  ✓ [{view_name}] winner selected.")
 
-        print("\n⏳  Stage 2: cross-view final comparison (Claude Haiku) …")
+        print("\n⏳  Stage 2: cross-view final comparison (Claude Sonnet) …")
         final_winner, final_view, final_reason = self.final_judge(view_winners)
 
         return {
@@ -456,7 +362,7 @@ class Judge(ModelBase):
 
         print("\n── Intra-view winners ──")
         for view, data in result["intra_results"].items():
-            snippet  = data["winner"][:120]
+            snippet  = data["winner"][:120].replace('\n', ' ')
             ellipsis = "…" if len(data["winner"]) > 120 else ""
             print(f"\n  [{view.upper()}]")
             print(f"  Reason : {data['reason']}")
@@ -484,26 +390,19 @@ def _get_user_intent() -> str:
 
 
 def _run_generator(gen: Generator, intent: str) -> tuple[str, ViewPrompts]:
-    """Thread target: run one generator and return (name, ViewPrompts)."""
     print(f"  ⏳  [{gen.name}] generating …")
-    vp = gen.generate(intent)
-    print(f"  ✓  [{gen.name}] done.")
-    return gen.name, vp
+    try:
+        vp = gen.generate(intent)
+        print(f"  ✓  [{gen.name}] done.")
+        return gen.name, vp
+    except Exception as e:
+        print(f"  ❌  [{gen.name}] failed: {e}")
+        return gen.name, ViewPrompts() 
 
 
 def _merge_view_candidates(
     results: list[tuple[str, ViewPrompts]],
 ) -> dict[str, list[str]]:
-    """
-    Combine outputs from multiple generators into per-view candidate lists.
-
-    Example output:
-      {
-        "optimistic": ["<gpt prompt>", "<gemini prompt>"],
-        "critical":   ["<gpt prompt>", "<gemini prompt>"],
-        "creative":   ["<gpt prompt>", "<gemini prompt>"],
-      }
-    """
     merged: dict[str, list[str]] = {"optimistic": [], "critical": [], "creative": []}
     for _name, vp in results:
         for view, text in vp.as_dict().items():
@@ -518,7 +417,10 @@ def _print_all_views(results: list[tuple[str, ViewPrompts]]) -> None:
     for name, vp in results:
         print(f"\n  ── {name} ──")
         for label, text in vp.as_dict().items():
-            snippet  = text[:200]
+            if not text:
+                print(f"  [{label.upper()}] (Failed to generate)")
+                continue
+            snippet  = text[:200].replace('\n', ' ')
             ellipsis = "…" if len(text) > 200 else ""
             print(f"  [{label.upper()}] {snippet}{ellipsis}")
     print("─" * 60)
@@ -529,48 +431,16 @@ def _print_all_views(results: list[tuple[str, ViewPrompts]]) -> None:
 # ---------------------------------------------------------------------------
 
 def run_full_pipeline(intent: str = None) -> dict:
-    """
-    End-to-end pipeline:
-
-      1. Ask the user for an intent.
-      2. GPT-4.1 and Gemini 2.5 Flash each generate 3 view-prompts in parallel.
-      3. Claude Haiku (Judge) picks the best prompt per view  (Stage 1).
-         [OPT] All 3 intra-view comparisons now run concurrently.
-      4. Claude Haiku (Judge) picks the single best overall prompt (Stage 2).
-
-    ── To add another generator ────────────────────────────────────────────
-    Option A — new model from an existing provider:
-        generators.append(
-            Generator(model_backend=OpenAIBackend(model="gpt-4o"), name="GPT-4o")
-        )
-
-    Option B — new provider entirely:
-        class MyBackend(ModelBase):
-            def _call_model(self, messages, *, system=""):
-                ...  # your API call here
-        generators.append(Generator(model_backend=MyBackend(), name="MyModel"))
-    ────────────────────────────────────────────────────────────────────────
-    """
-
-    # ── Generators ───────────────────────────────────────────────────────────
     generators: list[Generator] = [
-        Generator(model_backend=OpenAIBackend(),  name="GPT-4.1"),
-        Generator(model_backend=GeminiBackend(),  name="Gemini-2.5-Flash"),
-        # Add more here ↓
+        Generator(model_backend=OpenAIBackend(),  name="GPT-5.1"),
+        Generator(model_backend=GeminiBackend(),  name="Gemini-3.5-Flash-Preview"),
     ]
 
-    # ── Judge (Claude Haiku) ─────────────────────────────────────────────────
-    judge = Judge(model_backend=ClaudeBackend())   # claude-haiku-4-5
+    judge = Judge(model_backend=ClaudeBackend())   # claude-sonnet-4-6
 
-    # ── Step 1: get user intent ───────────────────────────────────────────────
-    # OPT: Intent is fetched exactly once, before generation begins.
-    # The original had a duplicate `if not intent: _get_user_intent()` call
-    # placed *after* generation completed — a blocking stall that could never
-    # be triggered (intent was always set) but added dead code risk.
     if intent is None:
         intent = _get_user_intent()
 
-    # ── Step 2: run all generators concurrently ───────────────────────────────
     print(f"\n🚀  Running {len(generators)} generators in parallel …")
     gen_results: list[tuple[str, ViewPrompts]] = []
 
@@ -580,23 +450,17 @@ def run_full_pipeline(intent: str = None) -> dict:
             for gen in generators
         }
         for future in as_completed(futures):
-            name, vp = future.result()   # re-raises any exception from the thread
+            name, vp = future.result()   
             gen_results.append((name, vp))
 
-    # Restore a stable display order matching the `generators` list.
     order = {gen.name: i for i, gen in enumerate(generators)}
     gen_results.sort(key=lambda t: order.get(t[0], 99))
 
     _print_all_views(gen_results)
 
-    # ── Steps 3 & 4: judge ───────────────────────────────────────────────────
     view_candidates = _merge_view_candidates(gen_results)
     return judge.run(view_candidates)
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     result = run_full_pipeline()
